@@ -1,0 +1,11 @@
+empty     file     trees/empty.tree      expect=0
+single    file     trees/single.tree     expect=7
+small     file     trees/small.tree      expect=21
+lopsided  file     trees/lopsided.tree   expect=28
+
+perfect   perfect  24
+random    random   4000000
+chains    chains   20 30 50000
+chain     chain    100000 left
+rchain    chain    100000 right
+spine     spine    1000 22
