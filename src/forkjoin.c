@@ -9,6 +9,9 @@
 static void take_and_run();
 
 // ============================= DEQUE
+/*
+ * head points to first job, tail to one past last
+ */
 typedef struct {
     job *jobs[DEQUE_SIZE];
     size_t head, tail; // head points to first job, tail to one past last
@@ -32,6 +35,10 @@ static void compact(deque *d) {
     d->tail = id;
 }
 
+/*
+ * add a job at the end of the deque
+ * if deque is full, errors out
+ */
 static void push(deque *d, job *j) {
     pthread_mutex_lock(&d->mut);
     if (d->tail == DEQUE_SIZE) {
@@ -61,7 +68,10 @@ static void reset(deque *d) {
     d->tail = 0;
 }
 
-static job *take(deque *d) {
+/*
+ * return job at the end of the deque, or NULL if deque is empty
+ */
+static job *pop(deque *d) {
     pthread_mutex_lock(&d->mut);
     while (d->head < d->tail && !d->jobs[d->head])
         d->head++;
@@ -93,6 +103,9 @@ static i32 find(job *j) {
 }
 
 // ============================= FORK
+/*
+ * pushes a job onto the worker's deque
+ */
 void fj_fork(job *j) {
     j->done = 0;
     push(&d, j);
@@ -132,8 +145,15 @@ static void try_steal(size_t id, size_t nt) {
     }
 }
 
-static void take_and_run(deque *d, size_t id, size_t nt) {
-    job *j = take(d);
+/*
+ * fetches a job (from own deque or steals if empty) and runs it
+ * returns if no job found
+ */
+static void do_work() {
+    job *j;
+    j = pop(self);
+    if (!j)
+        j = try_steal();
     if (j) {
         (j->fn)(j->arg);
         j->done = 1;
@@ -142,6 +162,11 @@ static void take_and_run(deque *d, size_t id, size_t nt) {
     }
 }
 
+/*
+ * workers pop jobs from their queue or steal from others'
+ * until told to stop
+ * also initializes `self` deque
+ */
 void *worker(void *arg) {
     worker_arg *a = arg;
     while (!stop) {
@@ -150,9 +175,31 @@ void *worker(void *arg) {
     return NULL;
 }
 
+// ============================= JOIN
+
+/*
+ * waits for job j to finish
+ * if j is unclaimed, runs j
+ * otherwise, runs other jobs while waiting
+ */
+void fj_join(job *j) {
+    if (pop(self)) {
+        run_job(j);
+        return;
+    }
+    while (!j->done) {
+        do_work();
+    }
+}
+
 // ============================= INIT/SHUTDOWN
-static pthread_t threads[NTHREADS];
-static size_t nthreads;
+/*
+ * initializes the fork-join runtime
+ * nt: number of threads to use (usually # of machine cores)
+ *
+ * initializes the worker deques
+ * creates a thread per worker
+ */
 void fj_init(size_t nt) {
     if (64 < nt) {
         printf("-p must be at most 64\n");
@@ -179,6 +226,9 @@ void fj_init(size_t nt) {
     pthread_attr_destroy(&attr);
 }
 
+/*
+ * sets stop flag for workers and joins threads
+ */
 void fj_shutdown() {
     stop = 1;
     for (size_t i = 1; i < nthreads; ++i) {
