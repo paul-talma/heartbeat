@@ -3,10 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define DEQUE_SIZE (1 << 16)
-#define NTHREADS 64
-
-static void take_and_run();
+#define DEQUE_SIZE (1 << 10)
+#define MAX_THREADS 64
 
 // ============================= DEQUE
 /*
@@ -14,26 +12,15 @@ static void take_and_run();
  */
 typedef struct {
     job *jobs[DEQUE_SIZE];
-    size_t head, tail; // head points to first job, tail to one past last
+    size_t head, tail;
     pthread_mutex_t mut;
 } deque;
 
-static deque *deques[NTHREADS];
-
-static deque d = {
-    .head = 0,
-    .tail = 0,
-    .mut = PTHREAD_MUTEX_INITIALIZER,
-};
-
-static void compact(deque *d) {
-    size_t id = 0;
-    for (size_t i = d->head; i < d->tail; ++i)
-        if (d->jobs[i])
-            d->jobs[id++] = d->jobs[i];
-    d->head = 0;
-    d->tail = id;
-}
+static deque deques[MAX_THREADS];
+static pthread_t threads[MAX_THREADS];
+static size_t nthreads; // number of threads used
+static _Thread_local deque *self;
+static _Atomic i32 stop;
 
 /*
  * add a job at the end of the deque
@@ -42,27 +29,16 @@ static void compact(deque *d) {
 static void push(deque *d, job *j) {
     pthread_mutex_lock(&d->mut);
     if (d->tail == DEQUE_SIZE) {
-        compact(d);
-        if (d->tail == DEQUE_SIZE) {
-            printf("Too many jobs on deque\n");
-            exit(1);
-        }
+        printf("Too many jobs on deque\n");
+        exit(1);
     }
     d->jobs[d->tail++] = j;
     pthread_mutex_unlock(&d->mut);
 }
 
-// static job *pop(deque *d) {
-//     pthread_mutex_lock(&d->mut);
-//     if (d->head == d->tail) {
-//         pthread_mutex_unlock(&d->mut);
-//         return NULL;
-//     }
-//     job *j = d->jobs[--d->tail];
-//     pthread_mutex_unlock(&d->mut);
-//     return j;
-// }
-
+/*
+ * clears the deque
+ */
 static void reset(deque *d) {
     d->head = 0;
     d->tail = 0;
@@ -73,33 +49,32 @@ static void reset(deque *d) {
  */
 static job *pop(deque *d) {
     pthread_mutex_lock(&d->mut);
-    while (d->head < d->tail && !d->jobs[d->head])
-        d->head++;
-    if (d->head == d->tail) {
+    if (d->head == d->tail) { // deque empty
+        reset(d);
         pthread_mutex_unlock(&d->mut);
         return NULL;
     }
-    job *j = d->jobs[d->head++];
-    if (d->head == d->tail)
-        reset(d);
+    job *j = d->jobs[--d->tail];
     pthread_mutex_unlock(&d->mut);
     return j;
 }
 
-static void clean(deque *d) {
-    while (d->head < d->tail && !d->jobs[d->head])
-        d->head++;
-    while (d->head < d->tail && !d->jobs[d->tail - 1])
-        d->tail--;
-}
-
-static i32 find(job *j) {
-    for (size_t i = d.tail; d.head < i; --i) {
-        if (d.jobs[i - 1] == j) {
-            return i - 1;
-        }
+/*
+ * take a job from the front of the queue
+ * thieves take, owners pop
+ * `take` updates the deque's head if it points at an already claimed job
+ */
+static job *take(deque *d) {
+    pthread_mutex_lock(&d->mut);
+    if (d->head == d->tail) { // deque empty
+        pthread_mutex_unlock(&d->mut);
+        return NULL;
     }
-    return -1;
+    job *j = d->jobs[d->head++];
+    if (d->head == d->tail) // reset if we took the last job
+        reset(d);
+    pthread_mutex_unlock(&d->mut);
+    return j;
 }
 
 // ============================= FORK
@@ -108,41 +83,31 @@ static i32 find(job *j) {
  */
 void fj_fork(job *j) {
     j->done = 0;
-    push(&d, j);
-}
-
-// ============================= JOIN
-void fj_join(job *j) {
-    pthread_mutex_lock(&d.mut);
-    i32 id = find(j);
-    if (0 <= id) {
-        d.jobs[id] = NULL;
-        clean(&d);
-        pthread_mutex_unlock(&d.mut);
-        (j->fn)(j->arg);
-        j->done = 1;
-    } else {
-        pthread_mutex_unlock(&d.mut);
-        while (!j->done) {
-            take_and_run();
-        }
-    }
+    push(self, j);
 }
 
 // ============================= WORKER
-static _Atomic i32 stop;
-
-typedef struct {
-    size_t id;
-    size_t nt;
-    deque *d;
-} worker_arg;
-
-static void try_steal(size_t id, size_t nt) {
-    for (size_t i = 0; i < nt; ++i) {
-        // if i != id
-        // try taking from deque i
+/*
+ * looks for a job in other workers' deques
+ */
+static job *try_steal() {
+    for (size_t i = 0; i < nthreads; ++i) {
+        deque *d = &deques[i];
+        if (d != self) {
+            if (d->head == d->tail)
+                continue;
+            return take(d);
+        }
     }
+    return NULL;
+}
+
+/*
+ * runs and marks a job as done
+ */
+static void run_job(job *j) {
+    (j->fn)(j->arg);
+    j->done = 1;
 }
 
 /*
@@ -155,10 +120,7 @@ static void do_work() {
     if (!j)
         j = try_steal();
     if (j) {
-        (j->fn)(j->arg);
-        j->done = 1;
-    } else {
-        try_steal(id, nt);
+        run_job(j);
     }
 }
 
@@ -168,9 +130,10 @@ static void do_work() {
  * also initializes `self` deque
  */
 void *worker(void *arg) {
-    worker_arg *a = arg;
+    size_t worker_id = (size_t)arg;
+    self = &deques[worker_id];
     while (!stop) {
-        take_and_run(a->d, a->id, a->nt);
+        do_work();
     }
     return NULL;
 }
@@ -210,19 +173,13 @@ void fj_init(size_t nt) {
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 64 << 20);
-    for (size_t i = 1; i < nt; ++i) {
-        deques[i] = &(deque){
-            .head = 0,
-            .tail = 0,
-            .mut = PTHREAD_MUTEX_INITIALIZER,
-        };
-        worker_arg a = {
-            .id = i,
-            .nt = nt,
-            .d = deques[i],
-        };
-        pthread_create(&threads[i], &attr, worker, &a);
+    for (size_t i = 0; i < nt; ++i) {
+        pthread_mutex_init(&deques[i].mut, NULL);
     }
+    for (size_t i = 1; i < nt; ++i) {
+        pthread_create(&threads[i], &attr, worker, (void *)i);
+    }
+    self = &deques[0];
     pthread_attr_destroy(&attr);
 }
 

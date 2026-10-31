@@ -27,6 +27,7 @@ static u64 run_serial(struct node *root, const struct kconfig *cfg) {
 // =========================================== FORK-JOIN
 
 // closure body
+// unpacks args
 static void sum_job(void *p) {
     sum_arg *a = p;
     a->result = fj_sum(a->node, a->depth, a->max_depth);
