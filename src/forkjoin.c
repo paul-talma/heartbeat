@@ -6,7 +6,7 @@
  */
 void fj_fork(job *j) {
     j->done = 0;
-    ws_push(j);
+    push_ws(j);
 }
 
 // ============================= JOIN
@@ -17,7 +17,7 @@ void fj_fork(job *j) {
  * otherwise, runs other jobs while waiting
  */
 void fj_join(job *j) {
-    if (ws_pop()) {
+    if (pop_ws()) {
         ws_run_job(j);
         return;
     }

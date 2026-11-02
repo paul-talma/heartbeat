@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define DEQUE_SIZE (1 << 10)
+#define DEQUE_SIZE (1 << 16)
 #define MAX_THREADS 64
 
 // ============================= DEQUE
@@ -77,9 +77,9 @@ static job *take(deque *d) {
     return j;
 }
 
-void ws_push(job *j) { push(self, j); }
+void push_ws(job *j) { push(self, j); }
 
-job *ws_pop() { return pop(self); }
+job *pop_ws() { return pop(self); }
 
 // ============================= WORKER
 /*

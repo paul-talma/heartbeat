@@ -12,8 +12,8 @@ typedef struct {
 } job;
 
 // ============================= DEQUE
-void ws_push(job *j);
-job *ws_pop();
+void push_ws(job *j);
+job *pop_ws();
 
 // ============================= WORKER
 void ws_run_job(job *j);

@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -246,7 +247,7 @@ static void print_summary(const struct tcase *cs,
                           const struct kernel **ks,
                           int nks,
                           const struct result *res) {
-    int namew = 4;
+    int namew = 7;
     for (int i = 0; i < ncases; i++) {
         int l = (int)strlen(cs[i].name);
         if (l > namew)
@@ -287,6 +288,29 @@ static void print_summary(const struct tcase *cs,
         }
         printf("\n");
     }
+
+    printf("%-*s  %*s", namew, "geomean", basew, "");
+    for (int j = 1; j < nks; j++) {
+        int w = (int)strlen(ks[j]->name) > 8 ? (int)strlen(ks[j]->name) : 8;
+        double logsum = 0;
+        int n = 0;
+        for (int i = 0; i < ncases; i++) {
+            const struct result *base = &res[i * nks];
+            const struct result *r = &res[i * nks + j];
+            if (base->status == RUN_OK && r->status == RUN_OK && base->median > 0 &&
+                r->median > 0) {
+                logsum += log(base->median / r->median);
+                n++;
+            }
+        }
+        char cell[32];
+        if (n)
+            snprintf(cell, sizeof cell, "%.2fx", exp(logsum / n));
+        else
+            snprintf(cell, sizeof cell, "-");
+        printf("  %*s", w, cell);
+    }
+    printf("\n");
 }
 
 int harness_run(const struct tcase *cs,
